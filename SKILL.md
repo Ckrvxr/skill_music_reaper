@@ -1,54 +1,78 @@
 ---
-name: music_reaper
-description: Download audio from any yt-dlp-supported site, normalize to -14 LUFS, convert to FLAC, and rename to "歌名 - 歌手". Use when user provides a URL (YouTube, Bilibili, Niconico, etc.) and asks to download audio, rip music, or save a song.
+name: music-reaper
+description: Download audio from any yt-dlp-supported site, normalize to -14 LUFS, convert to FLAC with rich metadata, and rename to "歌名 - 歌手 [bitrate]". Use when user provides a URL (YouTube, Bilibili, Niconico, etc.) and asks to download audio, rip music, or save a song.
 ---
 
-# music_reaper
+# music-reaper
 
 ## Quick start
 
 ```powershell
-# Download, normalize, convert to FLAC, rename
-> yt-dlp -f "bestaudio[abr>0]/bestaudio" --print "%(abr)s" "<URL>"
+# Extract metadata JSON
+> yt-dlp --print-json "<URL>" > meta.json
+
+# Parse values (PowerShell)
+> $json = Get-Content meta.json -Raw | ConvertFrom-Json
+> $title = $json.title -replace ' - .*', ''
+> $artist = ($json.title -split ' - ')[1] -replace ' 「.*', ''
+> $bitrate = $json.abr -as [int]
+> $date = $json.upload_date -replace '(\d{4})(\d{2})(\d{2})', '$1-$2-$3'
+> $comment = "Original bitrate: ${bitrate} kbps | Source: $($json.extractor) | Uploader: $($json.uploader) | URL: $($json.webpage_url)"
+
+# Download, normalize, convert to FLAC with rich tags
 > yt-dlp -f "bestaudio[abr>0]/bestaudio" -x --audio-format wav -o "temp.wav" "<URL>"
 > ffmpeg -i "temp.wav" -af "loudnorm=I=-14:LRA=+1:TP=-1" -ar 44100 -y "temp_norm.wav"
-> ffmpeg -i "temp_norm.wav" -c:a flac -metadata comment="Original bitrate: $bitrate kbps" -y "output.flac"
-> Remove-Item "temp.wav", "temp_norm.wav"
+> ffmpeg -i "temp_norm.wav" -c:a flac -metadata title="$title" -metadata artist="$artist" -metadata date="$date" -metadata comment="$comment" -y "${title} - ${artist} [${bitrate}kbps].flac"
+> Remove-Item meta.json, temp.wav, temp_norm.wav -Force
 ```
 
 ## Workflow
 
-1. **Get title & artist** — extract metadata for filename:
+1. **Extract metadata JSON**:
    ```powershell
-   yt-dlp --print "%(title)s" "<URL>"
+   yt-dlp --print-json "<URL>" > meta.json
    ```
-   If title contains ` · ` (artists already) or is clearly `歌名 - 歌手`, use it directly.
 
-2. **Get original bitrate** (in kbps):
+2. **Parse metadata** into variables:
    ```powershell
-   $bitrate = yt-dlp -f "bestaudio[abr>0]/bestaudio" --print "%(abr)s" "<URL>"
+   $json = Get-Content meta.json -Raw | ConvertFrom-Json
+   $rawTitle = $json.title
+   $title = $rawTitle -replace ' - .*', ''
+   $artist = ($rawTitle -split ' - ')[1] -replace ' 「.*', ''
+   $bitrate = [math]::Round($json.abr)
+   $date = $json.upload_date -replace '(\d{4})(\d{2})(\d{2})', '$1-$2-$3'
+   $comment = "Original bitrate: ${bitrate} kbps | Source: $($json.extractor) | Uploader: $($json.uploader) | URL: $($json.webpage_url)"
+   ```
+   Title parsing assumes `歌名 - 歌手「其他信息」` format. For simple `歌名 - 歌手`, use:
+   ```powershell
+   $parts = $rawTitle -split ' - '
+   $title = $parts[0]
+   $artist = $parts[1..$($parts.Length-1)] -join ' - '
    ```
 
 3. **Download audio** as WAV (highest available quality):
    ```powershell
-   yt-dlp -f "bestaudio[abr>0]/bestaudio" -x --audio-format wav -o "%(title)s.%(ext)s" "<URL>"
+   yt-dlp -f "bestaudio[abr>0]/bestaudio" -x --audio-format wav -o "temp.wav" "<URL>"
    ```
 
 4. **Normalize LUFS** to -14 (broadcast standard):
    ```powershell
-   ffmpeg -i "<file>.wav" -af "loudnorm=I=-14:LRA=+1:TP=-1" -ar 44100 -y "<file>_norm.wav"
+   ffmpeg -i "temp.wav" -af "loudnorm=I=-14:LRA=+1:TP=-1" -ar 44100 -y "temp_norm.wav"
    ```
 
-5. **Convert to FLAC** with original bitrate in comment:
+5. **Convert to FLAC** with rich metadata tags:
    ```powershell
-   ffmpeg -i "<file>_norm.wav" -c:a flac -metadata comment="Original bitrate: $bitrate kbps" -y "<file>.flac"
+   ffmpeg -i "temp_norm.wav" -c:a flac `
+     -metadata title="$title" `
+     -metadata artist="$artist" `
+     -metadata date="$date" `
+     -metadata comment="$comment" `
+     -y "${title} - ${artist} [${bitrate}kbps].flac"
    ```
 
-6. **Rename** to `歌名 - 歌手 [$bitrate`kbps].flac` format (use web search or YouTube description to resolve artist if needed).
-
-7. **Clean up** intermediate files:
+6. **Clean up** intermediate files:
    ```powershell
-   Remove-Item "<file>.wav", "<file>_norm.wav" -Force
+   Remove-Item meta.json, temp.wav, temp_norm.wav -Force
    ```
 
 ## Cookies (for login-required sites)
